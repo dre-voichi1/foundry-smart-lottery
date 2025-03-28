@@ -38,14 +38,28 @@ contract SmartRaffle is VRFConsumerBaseV2Plus {
     /* Errors */
     error SmartRaffle__SendMoreToEnterRaffle();
     error SmartRaffle__TransferFailed();
-    error SmartRaffle__WaitMoreToPickWinner();
+    error SmartRaffle__WaitMoreBeforePickingWinner(
+        uint256 contractBalance,
+        uint256 numberOfPlayers,
+        uint256 raffleState
+    );
+
+    error SmartRaffle__RaffleNotOpen();
+
+    /* Type Declarations */
+    enum RaffleState {
+        OPEN,
+        CALCULATING
+    }
 
     /* State Variables */
+    RaffleState private s_raffleState;
+
     /// @dev The duration of each lottery in seconds
-    uint256 private immutable i_timeIntervalInSeconds;
+    uint256 private immutable i_interval;
     uint256 private immutable i_entranceFee;
 
-    uint256 private immutable i_previousTimestamp; /// @dev Previous snapshot of time for logic later on
+    uint256 private s_lastTimestamp; /// @dev Previous snapshot of time for logic later on
     bytes32 private immutable i_keyHash; /// @dev The maximum amt. of wei specified -> requests in wei
 
     uint256 private immutable i_subscriptionId; /// @dev The subscription ID for the consumer contracts
@@ -53,12 +67,14 @@ contract SmartRaffle is VRFConsumerBaseV2Plus {
 
     // Which data structures should we use to track data (like players)?
     address payable[] private s_players;
+    address private s_recentWinner;
 
     uint32 private constant NUM_WORDS = 1;
     uint16 private constant REQUEST_CONFIRMATIONS = 3; /// @dev The # of block confirmations before the Chainlink node responds
 
     /* Events */
     event RaffleEntered(address indexed newPlayer);
+    event PickedWinner(address indexed recentWinner);
 
     /* Functions */
     constructor(
@@ -70,15 +86,20 @@ contract SmartRaffle is VRFConsumerBaseV2Plus {
         uint32 callbackGasLimit
     ) VRFConsumerBaseV2Plus(vrfCoordinatorAddress) {
         i_entranceFee = entranceFee;
-        i_timeIntervalInSeconds = timeIntervalInSeconds;
+        i_interval = timeIntervalInSeconds;
 
-        i_previousTimestamp = block.timestamp; // Sets the previous timestamp in the constructor
+        s_lastTimestamp = block.timestamp; // Sets the previous timestamp in the constructor
         i_keyHash = gasLane;
         i_subscriptionId = subscriptionId;
         i_callbackGasLimit = callbackGasLimit;
+
+        s_raffleState = RaffleState.OPEN;
     }
 
     function enterRaffle() external payable {
+        if (s_raffleState != RaffleState.OPEN)
+            revert SmartRaffle__RaffleNotOpen();
+
         if (msg.value < i_entranceFee)
             revert SmartRaffle__SendMoreToEnterRaffle(); /// @dev Brings up a error when msg.value < minimum amt required
 
@@ -89,16 +110,30 @@ contract SmartRaffle is VRFConsumerBaseV2Plus {
     } /// @notice Enter raffle (buy a lottery ticket)
 
     /* Objectives:
-        1. Get random number
-        2. Use random number -> pick player
-        3. Be automatically called
+        1. Get random number - ✅
+        2. Use random number -> pick winner - ✅
+        3. Be automatically called - ✅
     */
-    function pickWinner() external {
-        /// @dev Example: 1000 - 950 = 50, where the interval in seconds was 100 (50 < 100), which fails
-        if ((block.timestamp - i_previousTimestamp) < i_timeIntervalInSeconds) {
-            revert SmartRaffle__WaitMoreToPickWinner();
+    function performUpkeep() external {
+        /* Checks */
+        (bool upkeepNeeded, ) = checkUpkeep("");
+
+        if (!upkeepNeeded) {
+            revert SmartRaffle__WaitMoreBeforePickingWinner(
+                address(this).balance,
+                s_players.length,
+                uint256(s_raffleState)
+            );
         }
 
+        /* Effects */
+        /// @dev Renews the s_players array to a new one & changes raffle state -> CALCULATING
+        s_raffleState = RaffleState.CALCULATING;
+        s_players = new address payable[](0);
+
+        s_lastTimestamp = block.timestamp;
+
+        /* Interactions */
         VRFV2PlusClient.RandomWordsRequest memory request = VRFV2PlusClient
             .RandomWordsRequest({
                 keyHash: i_keyHash,
@@ -111,16 +146,54 @@ contract SmartRaffle is VRFConsumerBaseV2Plus {
                     VRFV2PlusClient.ExtraArgsV1({nativePayment: false})
                 )
             });
-        uint256 requestId = s_vrfCoordinator.requestRandomWords(request);
+        s_vrfCoordinator.requestRandomWords(request);
     } /// @notice Pick the winner (winner gets money at the end of raffle)
 
+    /**
+     * @dev For each lottery run, it has to meet these conditions before picking a winner:
+     * 1. The time interval has passed between raffle runs
+     * 2. The lottery is open
+     * 3. The contract has ETH (players should've funded it when entering the raffle)
+     * 5. Enough players have entered the raffle
+     * 6. Implicitly, your subscription for Chainlink services has LINK
+     * @param - ignored
+     * @return upkeepNeeded - True if the lottry should restart
+     * @return - ignored
+     */
+    function checkUpkeep(
+        bytes memory /* checkData */
+    ) public view returns (bool upkeepNeeded, bytes memory /* performData */) {
+        bool timeHasPassed = ((block.timestamp - s_lastTimestamp) >=
+            i_interval);
+        bool raffleIsOpen = s_raffleState == RaffleState.OPEN;
+        bool hasBalance = address(this).balance > 0;
+        bool hasPlayers = s_players.length > 0;
+
+        upkeepNeeded =
+            timeHasPassed &&
+            raffleIsOpen &&
+            hasBalance &&
+            hasPlayers;
+
+        return (upkeepNeeded, "0x0");
+    }
+
     function fulfillRandomWords(
-        uint256 requestId,
+        uint256 /* requestId */,
         uint256[] calldata randomWords
     ) internal override {
-        uint256 indexOfWinner = randomWords[0] % s_players.length;
+        // Checks (Check requirements first)
+
+        // Effects (Internal contract state changes)
+        uint256 indexOfWinner = randomWords[0] % s_players.length; /// @dev Generates random numbers & picks winner
         address payable recentWinner = s_players[indexOfWinner];
 
+        s_recentWinner = address(recentWinner);
+        s_raffleState = RaffleState.OPEN;
+
+        emit PickedWinner(s_recentWinner);
+
+        // Interactions (External contract state changes)
         (bool success, ) = recentWinner.call{value: address(this).balance}("");
         if (!success) revert SmartRaffle__TransferFailed();
     }
