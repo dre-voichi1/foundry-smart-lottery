@@ -79,14 +79,14 @@ contract SmartRaffle is VRFConsumerBaseV2Plus {
     /* Functions */
     constructor(
         uint256 entranceFee,
-        uint256 timeIntervalInSeconds,
-        address vrfCoordinatorAddress,
-        bytes32 gasLane /* keyhash */,
+        uint256 interval,
+        address vrfCoordinator,
+        bytes32 gasLane,
         uint256 subscriptionId,
         uint32 callbackGasLimit
-    ) VRFConsumerBaseV2Plus(vrfCoordinatorAddress) {
+    ) VRFConsumerBaseV2Plus(vrfCoordinator) {
         i_entranceFee = entranceFee;
-        i_interval = timeIntervalInSeconds;
+        i_interval = interval;
 
         s_lastTimestamp = block.timestamp; // Sets the previous timestamp in the constructor
         i_keyHash = gasLane;
@@ -154,7 +154,7 @@ contract SmartRaffle is VRFConsumerBaseV2Plus {
      * 1. The time interval has passed between raffle runs
      * 2. The lottery is open
      * 3. The contract has ETH (players should've funded it when entering the raffle)
-     * 5. Enough players have entered the raffle
+     * 5. Enough players have entered the raffle beforehand
      * 6. Implicitly, your subscription for Chainlink services has LINK
      * @param - ignored
      * @return upkeepNeeded - True if the lottry should restart
@@ -203,5 +203,9 @@ contract SmartRaffle is VRFConsumerBaseV2Plus {
      */
     function getEntranceFee() external view returns (uint256 entranceFee) {
         return i_entranceFee;
+    }
+
+    function getRaffleState() external view returns (RaffleState) {
+        return s_raffleState;
     }
 }
