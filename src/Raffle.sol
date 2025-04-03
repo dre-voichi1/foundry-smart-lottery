@@ -114,7 +114,7 @@ contract SmartRaffle is VRFConsumerBaseV2Plus {
         2. Use random number -> pick winner - ✅
         3. Be automatically called - ✅
     */
-    function performUpkeep() external {
+    function performUpkeep(bytes calldata /* performData */) external {
         /* Checks */
         (bool upkeepNeeded, ) = checkUpkeep("");
 
@@ -175,7 +175,7 @@ contract SmartRaffle is VRFConsumerBaseV2Plus {
             hasBalance &&
             hasPlayers;
 
-        return (upkeepNeeded, "0x0");
+        return (upkeepNeeded, "");
     }
 
     function fulfillRandomWords(
@@ -207,5 +207,9 @@ contract SmartRaffle is VRFConsumerBaseV2Plus {
 
     function getRaffleState() external view returns (RaffleState) {
         return s_raffleState;
+    }
+
+    function getPlayer(uint256 playerIndex) external view returns (address) {
+        return s_players[playerIndex];
     }
 }
